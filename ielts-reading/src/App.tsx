@@ -14,10 +14,57 @@ interface QuestionResult {
   correctAnswer: string[]
 }
 
+interface SavedTestResult {
+  id: string
+  testTitle: string
+  testSubtitle?: string
+  completedAt: string
+  score: number
+  totalQuestions: number
+  results: QuestionResult[]
+  test: ReadingTest
+}
+
 const formatTime = (seconds: number) => {
   const mins = Math.floor(seconds / 60)
   const secs = seconds % 60
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+}
+
+const STORAGE_KEY = 'ielts-saved-test-results'
+
+const saveTestResult = (result: SavedTestResult): void => {
+  try {
+    const existing = localStorage.getItem(STORAGE_KEY)
+    const results: SavedTestResult[] = existing ? JSON.parse(existing) : []
+    results.unshift(result) // Add to beginning
+    // Keep only last 50 results
+    const limited = results.slice(0, 50)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(limited))
+  } catch (error) {
+    console.error('Failed to save test result:', error)
+  }
+}
+
+const getSavedTestResults = (): SavedTestResult[] => {
+  try {
+    const existing = localStorage.getItem(STORAGE_KEY)
+    return existing ? JSON.parse(existing) : []
+  } catch (error) {
+    console.error('Failed to load saved test results:', error)
+    return []
+  }
+}
+
+const deleteSavedTestResult = (id: string): void => {
+  try {
+    const existing = localStorage.getItem(STORAGE_KEY)
+    const results: SavedTestResult[] = existing ? JSON.parse(existing) : []
+    const filtered = results.filter((r) => r.id !== id)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered))
+  } catch (error) {
+    console.error('Failed to delete test result:', error)
+  }
 }
 
 const defaultOptions = (): ChoiceOption[] => [
@@ -145,6 +192,8 @@ function App() {
   )
   const [highlights, setHighlights] = useState<Record<string, boolean>>({})
   const [results, setResults] = useState<QuestionResult[] | null>(null)
+  const [savedResults, setSavedResults] = useState<SavedTestResult[]>(() => getSavedTestResults())
+  const [viewingSavedResult, setViewingSavedResult] = useState<SavedTestResult | null>(null)
 
   // Normalize answer for comparison (case-insensitive, trimmed)
   const normalizeAnswer = (answer: string): string => {
@@ -194,6 +243,20 @@ function App() {
 
     setResults(questionResults)
     setMode('results')
+    
+    // Save results to localStorage
+    const correctCount = questionResults.filter((r) => r.isCorrect).length
+    const savedResult: SavedTestResult = {
+      id: `test-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      testTitle: test.title,
+      testSubtitle: test.subtitle,
+      completedAt: new Date().toISOString(),
+      score: correctCount,
+      totalQuestions: questionResults.length,
+      results: questionResults,
+      test: JSON.parse(JSON.stringify(test)) as ReadingTest,
+    }
+    saveTestResult(savedResult)
   }, [test, answers, answersMatch])
 
   useEffect(() => {
@@ -333,6 +396,27 @@ function App() {
     setAnswers(buildInitialAnswers(draft.sections.flatMap((s) => s.questions)))
     setReviewFlags({})
     setResults(null)
+    setViewingSavedResult(null)
+    // Reload saved results
+    setSavedResults(getSavedTestResults())
+  }
+
+  const handleViewSavedResult = (savedResult: SavedTestResult) => {
+    setViewingSavedResult(savedResult)
+  }
+
+  const handleCloseSavedResult = () => {
+    setViewingSavedResult(null)
+  }
+
+  const handleDeleteSavedResult = (id: string) => {
+    if (window.confirm('Bu sonucu silmek istediğinize emin misiniz?')) {
+      deleteSavedTestResult(id)
+      setSavedResults(getSavedTestResults())
+      if (viewingSavedResult?.id === id) {
+        setViewingSavedResult(null)
+      }
+    }
   }
 
 
@@ -929,6 +1013,69 @@ function App() {
           </p>
         </div>
 
+        <div className="author-import">
+          <h3 style={{ marginTop: 0, marginBottom: '12px' }}>Kaydedilmiş Sınav Sonuçları</h3>
+          {savedResults.length === 0 ? (
+            <p className="help-text">Henüz kaydedilmiş sınav sonucu yok.</p>
+          ) : (
+            <div className="saved-results-list">
+              {savedResults.map((savedResult) => {
+                const date = new Date(savedResult.completedAt)
+                const dateStr = date.toLocaleDateString('tr-TR', {
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })
+                const percentage = Math.round((savedResult.score / savedResult.totalQuestions) * 100)
+                return (
+                  <div key={savedResult.id} className="saved-result-item">
+                    <div className="saved-result-header">
+                      <div>
+                        <strong>{savedResult.testTitle}</strong>
+                        {savedResult.testSubtitle && (
+                          <div style={{ fontSize: '14px', color: '#64748b', marginTop: '4px' }}>
+                            {savedResult.testSubtitle}
+                          </div>
+                        )}
+                        <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
+                          {dateStr}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: '20px', fontWeight: 700, color: '#1f2937' }}>
+                          {savedResult.score} / {savedResult.totalQuestions}
+                        </div>
+                        <div style={{ fontSize: '14px', color: '#64748b' }}>
+                          %{percentage}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="saved-result-actions">
+                      <button
+                        className="ghost small"
+                        type="button"
+                        onClick={() => handleViewSavedResult(savedResult)}
+                      >
+                        Detayları Görüntüle
+                      </button>
+                      <button
+                        className="ghost small"
+                        type="button"
+                        onClick={() => handleDeleteSavedResult(savedResult.id)}
+                        style={{ color: '#ef4444' }}
+                      >
+                        Sil
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
         {draft.sections.map((section, idx) => (
           <div key={section.id} className="author-section">
             <div className="author-section-head">
@@ -1519,6 +1666,96 @@ function App() {
             <div className="results-actions">
               <button className="primary" type="button" onClick={handleBackToEdit}>
                 Back to Editing
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {viewingSavedResult && (
+        <div className="results-overlay">
+          <div className="results-modal">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ margin: 0 }}>Kaydedilmiş Sonuçlar</h2>
+              <button className="ghost small" type="button" onClick={handleCloseSavedResult}>
+                ✕ Kapat
+              </button>
+            </div>
+            <div className="results-summary">
+              <div style={{ marginBottom: '12px' }}>
+                <strong>{viewingSavedResult.testTitle}</strong>
+                {viewingSavedResult.testSubtitle && (
+                  <div style={{ fontSize: '14px', color: '#64748b', marginTop: '4px' }}>
+                    {viewingSavedResult.testSubtitle}
+                  </div>
+                )}
+                <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '8px' }}>
+                  {new Date(viewingSavedResult.completedAt).toLocaleDateString('tr-TR', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </div>
+              </div>
+              <div className="score-card">
+                <div className="score-number">
+                  {viewingSavedResult.score} / {viewingSavedResult.totalQuestions}
+                </div>
+                <div className="score-percentage">
+                  {Math.round((viewingSavedResult.score / viewingSavedResult.totalQuestions) * 100)}%
+                </div>
+              </div>
+            </div>
+            <div className="results-details">
+              <h3>Soru Bazında Sonuçlar</h3>
+              <div className="results-list">
+                {viewingSavedResult.test.sections.flatMap((section) =>
+                  section.questions.map((question) => {
+                    const result = viewingSavedResult.results.find((r) => r.questionId === question.id)
+                    if (!result) return null
+                    return (
+                      <div
+                        key={question.id}
+                        className={`result-item ${result.isCorrect ? 'correct' : 'incorrect'}`}
+                      >
+                        <div className="result-header">
+                          <span className="result-number">Q{question.number}</span>
+                          <span className={`result-status ${result.isCorrect ? 'correct' : 'incorrect'}`}>
+                            {result.isCorrect ? '✓ Doğru' : '✗ Yanlış'}
+                          </span>
+                        </div>
+                        <div className="result-prompt">{question.prompt}</div>
+                        <div className="result-answers">
+                          <div className="answer-row">
+                            <strong>Sizin cevabınız:</strong>{' '}
+                            {result.userAnswer.length > 0
+                              ? result.userAnswer.join(', ')
+                              : '(cevap yok)'}
+                          </div>
+                          <div className="answer-row">
+                            <strong>Doğru cevap:</strong>{' '}
+                            {result.correctAnswer.join(', ')}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  }),
+                )}
+              </div>
+            </div>
+            <div className="results-actions">
+              <button className="ghost" type="button" onClick={handleCloseSavedResult}>
+                Kapat
+              </button>
+              <button
+                className="ghost"
+                type="button"
+                onClick={() => handleDeleteSavedResult(viewingSavedResult.id)}
+                style={{ color: '#ef4444' }}
+              >
+                Sonucu Sil
               </button>
             </div>
           </div>
