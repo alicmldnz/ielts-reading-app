@@ -41,6 +41,19 @@
   margin-left: 4px;
 }
 
+.timer-paused-indicator {
+  color: #dc2626;
+  font-weight: 600;
+  margin-left: 8px;
+  font-size: 12px;
+}
+
+.timer-pause-btn {
+  font-size: 13px;
+  padding: 4px 8px;
+  margin-left: 8px;
+}
+
 .masthead-actions {
   display: flex;
   gap: 8px;

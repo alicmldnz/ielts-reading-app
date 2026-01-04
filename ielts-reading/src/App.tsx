@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ChoiceOption, PassageSection, Question, ReadingTest } from './types'
 import readingTest310 from './data/readingTest310'
+import readingTest311 from './data/readingTest311'
+import readingTest312 from './data/readingTest312'
 import './App.css'
+// PDF.js is no longer used - we use Python script for PDF processing
+// import * as pdfjsLib from 'pdfjs-dist'  // Removed - not needed with JSON import
 
 type AnswerState = Record<string, string[]>
 type ReviewState = Record<string, boolean>
@@ -25,6 +29,14 @@ interface SavedTestResult {
   test: ReadingTest
 }
 
+interface VocabularyWord {
+  id: string
+  word: string
+  translation?: string
+  context?: string
+  addedAt: string
+}
+
 const formatTime = (seconds: number) => {
   const mins = Math.floor(seconds / 60)
   const secs = seconds % 60
@@ -32,6 +44,7 @@ const formatTime = (seconds: number) => {
 }
 
 const STORAGE_KEY = 'ielts-saved-test-results'
+const VOCABULARY_KEY = 'ielts-vocabulary-words'
 
 const saveTestResult = (result: SavedTestResult): void => {
   try {
@@ -66,6 +79,99 @@ const deleteSavedTestResult = (id: string): void => {
     console.error('Failed to delete test result:', error)
   }
 }
+
+const saveVocabularyWord = (word: VocabularyWord): void => {
+  try {
+    const existing = localStorage.getItem(VOCABULARY_KEY)
+    const words: VocabularyWord[] = existing ? JSON.parse(existing) : []
+    // Check if word already exists (case-insensitive)
+    const normalizedWord = word.word.toLowerCase().trim()
+    const exists = words.some((w) => w.word.toLowerCase().trim() === normalizedWord)
+    if (!exists) {
+      words.unshift(word) // Add to beginning
+      localStorage.setItem(VOCABULARY_KEY, JSON.stringify(words))
+    }
+  } catch (error) {
+    console.error('Failed to save vocabulary word:', error)
+  }
+}
+
+const getVocabularyWords = (): VocabularyWord[] => {
+  try {
+    const existing = localStorage.getItem(VOCABULARY_KEY)
+    return existing ? JSON.parse(existing) : []
+  } catch (error) {
+    console.error('Failed to load vocabulary words:', error)
+    return []
+  }
+}
+
+const deleteVocabularyWord = (id: string): void => {
+  try {
+    const existing = localStorage.getItem(VOCABULARY_KEY)
+    const words: VocabularyWord[] = existing ? JSON.parse(existing) : []
+    const filtered = words.filter((w) => w.id !== id)
+    localStorage.setItem(VOCABULARY_KEY, JSON.stringify(filtered))
+  } catch (error) {
+    console.error('Failed to delete vocabulary word:', error)
+  }
+}
+
+const updateVocabularyWord = (id: string, updates: Partial<VocabularyWord>): void => {
+  try {
+    const existing = localStorage.getItem(VOCABULARY_KEY)
+    const words: VocabularyWord[] = existing ? JSON.parse(existing) : []
+    const updated = words.map((w) => (w.id === id ? { ...w, ...updates } : w))
+    localStorage.setItem(VOCABULARY_KEY, JSON.stringify(updated))
+  } catch (error) {
+    console.error('Failed to update vocabulary word:', error)
+  }
+}
+
+const exportVocabularyWords = (format: 'json' | 'csv' | 'txt'): void => {
+  const words = getVocabularyWords()
+  let content = ''
+  let filename = ''
+  let mimeType = ''
+
+  if (format === 'json') {
+    content = JSON.stringify(words, null, 2)
+    filename = `vocabulary-words-${new Date().toISOString().split('T')[0]}.json`
+    mimeType = 'application/json'
+  } else if (format === 'csv') {
+    const headers = 'Word,Translation,Context,Added At\n'
+    const rows = words.map((w) => {
+      const word = `"${w.word.replace(/"/g, '""')}"`
+      const translation = w.translation ? `"${w.translation.replace(/"/g, '""')}"` : ''
+      const context = w.context ? `"${w.context.replace(/"/g, '""')}"` : ''
+      const date = new Date(w.addedAt).toLocaleDateString('tr-TR')
+      return `${word},${translation},${context},${date}`
+    }).join('\n')
+    content = headers + rows
+    filename = `vocabulary-words-${new Date().toISOString().split('T')[0]}.csv`
+    mimeType = 'text/csv'
+  } else if (format === 'txt') {
+    content = words.map((w) => {
+      let line = w.word
+      if (w.translation) line += ` - ${w.translation}`
+      if (w.context) line += ` (${w.context})`
+      return line
+    }).join('\n')
+    filename = `vocabulary-words-${new Date().toISOString().split('T')[0]}.txt`
+    mimeType = 'text/plain'
+  }
+
+  const blob = new Blob([content], { type: mimeType })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
 
 const defaultOptions = (): ChoiceOption[] => [
   { value: 'A', label: 'A' },
@@ -159,9 +265,9 @@ function App() {
   const [mode, setMode] = useState<Mode>('author')
   const [draft, setDraft] = useState<ReadingTest>({
     title: 'Custom IELTS Reading',
-    subtitle: 'Build four parts, then start the test',
+    subtitle: 'Build three parts, then start the test',
     durationMinutes: 60,
-    sections: [0, 1, 2, 3].map((i) => createBlankSection(i))
+    sections: [0, 1, 2].map((i) => createBlankSection(i))
   })
   const [test, setTest] = useState<ReadingTest | null>(null)
   const [newQuestionType, setNewQuestionType] = useState<
@@ -190,10 +296,16 @@ function App() {
   const [secondsLeft, setSecondsLeft] = useState(
     activeTest.durationMinutes * 60,
   )
+  const [isTimerPaused, setIsTimerPaused] = useState(false)
   const [highlights, setHighlights] = useState<Record<string, boolean>>({})
   const [results, setResults] = useState<QuestionResult[] | null>(null)
   const [savedResults, setSavedResults] = useState<SavedTestResult[]>(() => getSavedTestResults())
   const [viewingSavedResult, setViewingSavedResult] = useState<SavedTestResult | null>(null)
+  const [vocabularyWords, setVocabularyWords] = useState<VocabularyWord[]>(() => getVocabularyWords())
+  const [selectedText, setSelectedText] = useState<string>('')
+  const [showVocabularyModal, setShowVocabularyModal] = useState(false)
+  const [vocabularyTranslation, setVocabularyTranslation] = useState<string>('')
+  const [vocabularyContext, setVocabularyContext] = useState<string>('')
 
   // Normalize answer for comparison (case-insensitive, trimmed)
   const normalizeAnswer = (answer: string): string => {
@@ -260,12 +372,12 @@ function App() {
   }, [test, answers, answersMatch])
 
   useEffect(() => {
-    if (mode !== 'exam') return
+    if (mode !== 'exam' || isTimerPaused) return
     const id = setInterval(() => {
       setSecondsLeft((prev) => Math.max(prev - 1, 0))
     }, 1000)
     return () => clearInterval(id)
-  }, [mode])
+  }, [mode, isTimerPaused])
 
   // Check if time is up and finish test
   useEffect(() => {
@@ -273,6 +385,18 @@ function App() {
       handleFinishTest()
     }
   }, [secondsLeft, mode, test, handleFinishTest])
+
+  // Handle text selection for vocabulary
+  useEffect(() => {
+    if (mode !== 'exam') return
+    const handleMouseUp = () => {
+      handleTextSelection()
+    }
+    document.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [mode])
 
   const scrollToQuestion = (questionId: string) => {
     const el = document.getElementById(`question-${questionId}`)
@@ -322,19 +446,27 @@ function App() {
   }
 
   const sectionTokenKey = (sectionId: string, paraIdx: number, tokenIdx: number) =>
-    `${sectionId}|${paraIdx}|${tokenIdx}`
+    `passage|${sectionId}|${paraIdx}|${tokenIdx}`
+
+  const questionTokenKey = (questionId: string, tokenIdx: number) =>
+    `question|${questionId}|${tokenIdx}`
 
   const toggleHighlight = (sectionId: string, paraIdx: number, tokenIdx: number) => {
     const key = sectionTokenKey(sectionId, paraIdx, tokenIdx)
     setHighlights((prev) => ({ ...prev, [key]: !prev[key] }))
   }
 
-  const highlightSelection = () => {
+  const toggleQuestionHighlight = (questionId: string, tokenIdx: number) => {
+    const key = questionTokenKey(questionId, tokenIdx)
+    setHighlights((prev) => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  const highlightSelection = (containerSelector: string, isQuestion: boolean = false) => {
     if (mode !== 'exam') return
     const selection = window.getSelection()
     if (!selection || selection.rangeCount === 0) return
     const range = selection.getRangeAt(0)
-    const container = document.querySelector('.passage-body')
+    const container = document.querySelector(containerSelector)
     if (!container) return
 
     const spans = container.querySelectorAll<HTMLSpanElement>('span.hl')
@@ -346,22 +478,74 @@ function App() {
       } catch {
         return
       }
-      const sectionId = span.dataset.sectionId
-      const paraIndex = span.dataset.paraIndex
-      const tokenIndex = span.dataset.tokenIndex
-      if (!sectionId || paraIndex === undefined || tokenIndex === undefined) return
-      const key = sectionTokenKey(
-        sectionId,
-        Number(paraIndex),
-        Number(tokenIndex),
-      )
-      updates[key] = true
+      
+      if (isQuestion) {
+        const questionId = span.dataset.questionId
+        const tokenIndex = span.dataset.tokenIndex
+        if (!questionId || tokenIndex === undefined) return
+        const key = questionTokenKey(questionId, Number(tokenIndex))
+        updates[key] = true
+      } else {
+        const sectionId = span.dataset.sectionId
+        const paraIndex = span.dataset.paraIndex
+        const tokenIndex = span.dataset.tokenIndex
+        if (!sectionId || paraIndex === undefined || tokenIndex === undefined) return
+        const key = sectionTokenKey(
+          sectionId,
+          Number(paraIndex),
+          Number(tokenIndex),
+        )
+        updates[key] = true
+      }
     })
 
     if (Object.keys(updates).length) {
       setHighlights((prev) => ({ ...prev, ...updates }))
     }
     selection.removeAllRanges()
+  }
+
+  const handleTextSelection = () => {
+    if (mode !== 'exam') return
+    const selection = window.getSelection()
+    if (!selection || selection.rangeCount === 0) {
+      setSelectedText('')
+      return
+    }
+    const text = selection.toString().trim()
+    if (text) {
+      setSelectedText(text)
+    } else {
+      setSelectedText('')
+    }
+  }
+
+  const handleAddToVocabulary = () => {
+    if (!selectedText.trim()) return
+    
+    // Extract individual words from selected text
+    const words = selectedText
+      .split(/\s+/)
+      .map((w) => w.replace(/[.,!?;:()[\]{}'"]/g, '').trim())
+      .filter((w) => w.length > 0 && /[a-zA-Z]/.test(w))
+    
+    words.forEach((word) => {
+      const vocabularyWord: VocabularyWord = {
+        id: `vocab-${Date.now()}-${Math.random().toString(16).slice(2)}-${word}`,
+        word: word,
+        translation: vocabularyTranslation || undefined,
+        context: vocabularyContext || selectedText.length > 50 ? selectedText.substring(0, 100) + '...' : selectedText,
+        addedAt: new Date().toISOString(),
+      }
+      saveVocabularyWord(vocabularyWord)
+    })
+    
+    setVocabularyWords(getVocabularyWords())
+    setSelectedText('')
+    setVocabularyTranslation('')
+    setVocabularyContext('')
+    setShowVocabularyModal(false)
+    window.getSelection()?.removeAllRanges()
   }
 
   const handleStartExam = () => {
@@ -373,11 +557,12 @@ function App() {
     setReviewFlags({})
     setActiveQuestionId(finalQuestions[0]?.id ?? '')
     setSecondsLeft(finalized.durationMinutes * 60)
+    setIsTimerPaused(false)
     // Scroll to top of page to show exam screen
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-  const handleImportTest = () => {
+  const handleImportTest = (testNumber: 310 | 311 | 312 = 310) => {
     const hasContent = draft.sections.some(
       (s) => s.questions.length > 0 || s.passage.some((p) => p.trim().length > 0)
     )
@@ -387,8 +572,10 @@ function App() {
       )
       if (!confirmed) return
     }
-    setDraft(JSON.parse(JSON.stringify(readingTest310)) as ReadingTest)
+    const test = testNumber === 310 ? readingTest310 : testNumber === 311 ? readingTest311 : readingTest312
+    setDraft(JSON.parse(JSON.stringify(test)) as ReadingTest)
   }
+
 
   const handleBackToEdit = () => {
     setMode('author')
@@ -790,7 +977,26 @@ function App() {
           <div className="prompt-wrap">
             <span className="pill">{question.number}</span>
             {question.type !== 'cloze' && (
-              <span className="prompt">{question.prompt}</span>
+              <span className="prompt">
+                {mode === 'exam' && question.prompt ? (() => {
+                  const tokens = question.prompt.split(/(\s+)/)
+                  return tokens.map((tok, tIdx) => {
+                    if (!tok.trim()) return <span key={tIdx}>{tok}</span>
+                    const key = questionTokenKey(question.id, tIdx)
+                    const on = !!highlights[key]
+                      return (
+                        <span
+                          key={tIdx}
+                          className={on ? 'hl on' : 'hl'}
+                          data-question-id={question.id}
+                          data-token-index={tIdx}
+                        >
+                          {tok}
+                        </span>
+                      )
+                  })
+                })() : question.prompt}
+              </span>
             )}
           </div>
         </div>
@@ -813,37 +1019,80 @@ function App() {
 
         {question.type === 'single' && (
           <div className="choices">
-            {question.options?.map((option) => (
-              <label key={option.value} className="choice">
-                <input
-                  type="radio"
-                  name={question.id}
-                  checked={value.includes(option.value)}
-                  onChange={() => updateAnswer(question.id, [option.value])}
-                />
-                <span>
-                  <strong>{option.value}</strong> {option.label}
-                </span>
-              </label>
-            ))}
+            {question.options?.map((option) => {
+              const optionId = `${question.id}-opt-${option.value}`
+              return (
+                <label key={option.value} className="choice">
+                  <input
+                    type="radio"
+                    name={question.id}
+                    checked={value.includes(option.value)}
+                    onChange={() => updateAnswer(question.id, [option.value])}
+                  />
+                  <span>
+                    <strong>{option.value}</strong>{' '}
+                    {mode === 'exam' && option.label ? (() => {
+                      const tokens = option.label.split(/(\s+)/)
+                      return tokens.map((tok, tIdx) => {
+                        if (!tok.trim()) return <span key={tIdx}>{tok}</span>
+                        const key = questionTokenKey(optionId, tIdx)
+                        const on = !!highlights[key]
+                          return (
+                            <span
+                              key={tIdx}
+                              className={on ? 'hl on' : 'hl'}
+                              data-question-id={optionId}
+                              data-token-index={tIdx}
+                            >
+                              {tok}
+                            </span>
+                          )
+                      })
+                    })() : option.label}
+                  </span>
+                </label>
+              )
+            })}
           </div>
         )}
 
         {question.type === 'multiple' && (
           <div className="choices">
-            {question.options?.map((option) => (
-              <label key={option.value} className="choice">
-                <input
-                  type="checkbox"
-                  name={`${question.id}-${option.value}`}
-                  checked={value.includes(option.value)}
-                  onChange={() =>
-                    handleCheckboxChange(question.id, option.value)
-                  }
-                />
-                <span>{option.label}</span>
-              </label>
-            ))}
+            {question.options?.map((option) => {
+              const optionId = `${question.id}-opt-${option.value}`
+              return (
+                <label key={option.value} className="choice">
+                  <input
+                    type="checkbox"
+                    name={`${question.id}-${option.value}`}
+                    checked={value.includes(option.value)}
+                    onChange={() =>
+                      handleCheckboxChange(question.id, option.value)
+                    }
+                  />
+                  <span>
+                    {mode === 'exam' && option.label ? (() => {
+                      const tokens = option.label.split(/(\s+)/)
+                      return tokens.map((tok, tIdx) => {
+                        if (!tok.trim()) return <span key={tIdx}>{tok}</span>
+                        const key = questionTokenKey(optionId, tIdx)
+                        const on = !!highlights[key]
+                          return (
+                            <span
+                              key={tIdx}
+                              className={on ? 'hl on' : 'hl'}
+                              data-question-id={optionId}
+                              data-token-index={tIdx}
+                            >
+                              {tok}
+                            </span>
+                          )
+                      })
+                    })() : option.label}
+                  </span>
+                </label>
+              )
+            })}
           </div>
         )}
 
@@ -959,7 +1208,7 @@ function App() {
         <div className="author-head">
           <div>
             <p className="eyebrow">Author mode</p>
-            <h1>Build your IELTS Reading (4 parts)</h1>
+            <h1>Build your IELTS Reading (3 parts)</h1>
             <p className="muted">
               Enter passage and questions for each part, then press Start Exam. Question type controls change the input format automatically.
             </p>
@@ -1005,12 +1254,107 @@ function App() {
           </label>
         </div>
         <div className="author-import">
-          <button className="ghost" type="button" onClick={handleImportTest}>
-            Import Reading Test 310
-          </button>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
+            <button className="ghost" type="button" onClick={() => handleImportTest(310)}>
+              Import Reading Test 310 (Önceden Hazır)
+            </button>
+            <button className="ghost" type="button" onClick={() => handleImportTest(311)}>
+              Import Reading Test 311 (Önceden Hazır)
+            </button>
+            <button className="ghost" type="button" onClick={() => handleImportTest(312)}>
+              Import Reading Test 312 (Önceden Hazır)
+            </button>
+          </div>
           <p className="help-text">
-            PDF'den çıkarılan test içeriğini yükler. Mevcut içerik kaybolur (onay istenir).
+            Önceden hazırlanmış test içeriğini yükler. Mevcut içerik kaybolur (onay istenir).
           </p>
+        </div>
+
+        <div className="author-import">
+          <h3 style={{ marginTop: 0, marginBottom: '12px' }}>Kelime Listesi</h3>
+          {vocabularyWords.length === 0 ? (
+            <p className="help-text">Henüz kelime eklenmemiş. Sınav modunda metin seçip "Add to Vocabulary" butonuna tıklayın.</p>
+          ) : (
+            <>
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                <button
+                  className="ghost small"
+                  type="button"
+                  onClick={() => exportVocabularyWords('json')}
+                >
+                  Export JSON
+                </button>
+                <button
+                  className="ghost small"
+                  type="button"
+                  onClick={() => exportVocabularyWords('csv')}
+                >
+                  Export CSV
+                </button>
+                <button
+                  className="ghost small"
+                  type="button"
+                  onClick={() => exportVocabularyWords('txt')}
+                >
+                  Export TXT
+                </button>
+                <button
+                  className="ghost small"
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm(`${vocabularyWords.length} kelimeyi silmek istediğinize emin misiniz?`)) {
+                      localStorage.removeItem(VOCABULARY_KEY)
+                      setVocabularyWords([])
+                    }
+                  }}
+                  style={{ color: '#ef4444' }}
+                >
+                  Tümünü Sil
+                </button>
+              </div>
+              <div className="vocabulary-list" style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                {vocabularyWords.map((word) => (
+                  <div key={word.id} className="vocabulary-item" style={{ border: '1px solid #cbd5e1', borderRadius: '4px', padding: '10px', marginBottom: '8px', background: '#fff' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 600, fontSize: '16px', marginBottom: '4px' }}>{word.word}</div>
+                        {word.translation && (
+                          <div style={{ color: '#64748b', marginBottom: '4px' }}>{word.translation}</div>
+                        )}
+                        {word.context && (
+                          <div style={{ fontSize: '12px', color: '#94a3b8', fontStyle: 'italic', marginTop: '4px' }}>
+                            "{word.context}"
+                          </div>
+                        )}
+                        <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '6px' }}>
+                          {new Date(word.addedAt).toLocaleDateString('tr-TR', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </div>
+                      </div>
+                      <button
+                        className="ghost small"
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm('Bu kelimeyi silmek istediğinize emin misiniz?')) {
+                            deleteVocabularyWord(word.id)
+                            setVocabularyWords(getVocabularyWords())
+                          }
+                        }}
+                        style={{ color: '#ef4444', marginLeft: '8px' }}
+                      >
+                        Sil
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
 
         <div className="author-import">
@@ -1494,7 +1838,15 @@ function App() {
               </span>
               <span className="timer-text">
                 {formatTime(secondsLeft)} <span className="timer-sub">minutes left</span>
+                {isTimerPaused && <span className="timer-paused-indicator"> (DURDURULDU)</span>}
               </span>
+              <button 
+                className="masthead-btn timer-pause-btn" 
+                onClick={() => setIsTimerPaused(!isTimerPaused)}
+                title={isTimerPaused ? 'Süreyi Devam Ettir' : 'Süreyi Durdur'}
+              >
+                {isTimerPaused ? '▶️ Devam' : '⏸️ Durdur'}
+              </button>
             </div>
             <div className="masthead-actions">
               <button className="masthead-btn" onClick={handleFinishTest}>Finish Test</button>
@@ -1529,10 +1881,20 @@ function App() {
                   <button
                     type="button"
                     className="ghost small"
-                    onClick={highlightSelection}
+                    onClick={() => highlightSelection('.passage-body', false)}
                   >
                     Highlight selection
                   </button>
+                  {selectedText && (
+                    <button
+                      type="button"
+                      className="ghost small"
+                      onClick={() => setShowVocabularyModal(true)}
+                      style={{ marginLeft: '8px' }}
+                    >
+                      Add to Vocabulary ({selectedText.split(/\s+/).filter(w => w.trim().length > 0).length} word(s))
+                    </button>
+                  )}
                 </div>
               )}
               <div className="passage-body">
@@ -1551,10 +1913,6 @@ function App() {
                             data-section-id={activeSection.id}
                             data-para-index={pIdx}
                             data-token-index={tIdx}
-                            onClick={() =>
-                              mode === 'exam' &&
-                              toggleHighlight(activeSection.id, pIdx, tIdx)
-                            }
                           >
                             {tok}
                           </span>
@@ -1567,11 +1925,34 @@ function App() {
             </div>
 
             <div className="panel questions">
-              <h3>
-                Questions {activeSection?.questions[0]?.number ?? ''}{' '}
-                {activeSection?.questions.length ? '–' : ''}{' '}
-                {activeSection?.questions[activeSection?.questions.length - 1]?.number ?? ''}
-              </h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <h3 style={{ margin: 0 }}>
+                  Questions {activeSection?.questions[0]?.number ?? ''}{' '}
+                  {activeSection?.questions.length ? '–' : ''}{' '}
+                  {activeSection?.questions[activeSection?.questions.length - 1]?.number ?? ''}
+                </h3>
+                {mode === 'exam' && (
+                  <div className="passage-tools">
+                    <button
+                      type="button"
+                      className="ghost small"
+                      onClick={() => highlightSelection('.question-list', true)}
+                    >
+                      Highlight selection
+                    </button>
+                    {selectedText && (
+                      <button
+                        type="button"
+                        className="ghost small"
+                        onClick={() => setShowVocabularyModal(true)}
+                        style={{ marginLeft: '8px' }}
+                      >
+                        Add to Vocabulary ({selectedText.split(/\s+/).filter(w => w.trim().length > 0).length} word(s))
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
               <div className="question-list">
                 {activeSection?.questions.map((question) => renderQuestion(question))}
               </div>
@@ -1756,6 +2137,64 @@ function App() {
                 style={{ color: '#ef4444' }}
               >
                 Sonucu Sil
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showVocabularyModal && (
+        <div className="results-overlay">
+          <div className="results-modal" style={{ maxWidth: '500px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ margin: 0 }}>Kelime Ekle</h2>
+              <button className="ghost small" type="button" onClick={() => {
+                setShowVocabularyModal(false)
+                setSelectedText('')
+                setVocabularyTranslation('')
+                setVocabularyContext('')
+              }}>
+                ✕ Kapat
+              </button>
+            </div>
+            <div style={{ marginBottom: '16px' }}>
+              <div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>Seçili Metin:</div>
+              <div style={{ padding: '12px', background: '#f3f4f6', borderRadius: '4px', fontSize: '14px' }}>
+                "{selectedText}"
+              </div>
+            </div>
+            <div className="stacked" style={{ marginBottom: '16px' }}>
+              <label>Çeviri (İsteğe bağlı)</label>
+              <input
+                type="text"
+                value={vocabularyTranslation}
+                onChange={(e) => setVocabularyTranslation(e.target.value)}
+                placeholder="Türkçe çeviri..."
+              />
+            </div>
+            <div className="stacked" style={{ marginBottom: '20px' }}>
+              <label>Bağlam (İsteğe bağlı)</label>
+              <textarea
+                value={vocabularyContext}
+                onChange={(e) => setVocabularyContext(e.target.value)}
+                placeholder="Cümle veya bağlam..."
+                rows={3}
+              />
+            </div>
+            <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '16px' }}>
+              * Seçili metinden {selectedText.split(/\s+/).filter(w => w.trim().length > 0 && /[a-zA-Z]/.test(w)).length} kelime eklenecek.
+            </div>
+            <div className="results-actions">
+              <button className="ghost" type="button" onClick={() => {
+                setShowVocabularyModal(false)
+                setSelectedText('')
+                setVocabularyTranslation('')
+                setVocabularyContext('')
+              }}>
+                İptal
+              </button>
+              <button className="primary" type="button" onClick={handleAddToVocabulary}>
+                Kelime Ekle
               </button>
             </div>
           </div>
