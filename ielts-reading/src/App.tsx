@@ -117,17 +117,6 @@ const deleteVocabularyWord = (id: string): void => {
   }
 }
 
-const updateVocabularyWord = (id: string, updates: Partial<VocabularyWord>): void => {
-  try {
-    const existing = localStorage.getItem(VOCABULARY_KEY)
-    const words: VocabularyWord[] = existing ? JSON.parse(existing) : []
-    const updated = words.map((w) => (w.id === id ? { ...w, ...updates } : w))
-    localStorage.setItem(VOCABULARY_KEY, JSON.stringify(updated))
-  } catch (error) {
-    console.error('Failed to update vocabulary word:', error)
-  }
-}
-
 const exportVocabularyWords = (format: 'json' | 'csv' | 'txt'): void => {
   const words = getVocabularyWords()
   let content = ''
@@ -450,16 +439,6 @@ function App() {
 
   const questionTokenKey = (questionId: string, tokenIdx: number) =>
     `question|${questionId}|${tokenIdx}`
-
-  const toggleHighlight = (sectionId: string, paraIdx: number, tokenIdx: number) => {
-    const key = sectionTokenKey(sectionId, paraIdx, tokenIdx)
-    setHighlights((prev) => ({ ...prev, [key]: !prev[key] }))
-  }
-
-  const toggleQuestionHighlight = (questionId: string, tokenIdx: number) => {
-    const key = questionTokenKey(questionId, tokenIdx)
-    setHighlights((prev) => ({ ...prev, [key]: !prev[key] }))
-  }
 
   const highlightSelection = (containerSelector: string, isQuestion: boolean = false) => {
     if (mode !== 'exam') return
@@ -1217,11 +1196,6 @@ function App() {
             <button className="primary" type="button" onClick={handleStartExam}>
               Start exam with this content
             </button>
-            {mode === 'exam' && (
-              <button className="ghost" type="button" onClick={handleBackToEdit}>
-                Back to editing
-              </button>
-            )}
           </div>
         </div>
         <div className="author-grid">
